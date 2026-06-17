@@ -1,0 +1,30 @@
+name: MPM-Diff
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - tqdm
+  - imageio
+  - imageio-ffmpeg
+  - pillow
+  - pytest
+  - ipykernel
+  - jupyterlab
+  - pyyaml
+  - ffmpeg
+  - pip:
+      # CUDA 13 Warp wheel for Linux x86_64. Requires NVIDIA driver 580+.
+      # If the driver is older,use the CUDA 12 wheel from the same release instead.
+      - warp-lang @ https://github.com/NVIDIA/warp/releases/download/v1.14.0/warp_lang-1.14.0%2Bcu13-py3-none-manylinux_2_28_x86_64.whl
+      # PyTorch 2.12+ Linux wheels currently depend on CUDA 13 runtime packages.
+      - torch>=2.12.0
+      # Warp examples/rendering dependencies that this project will use.
+      - usd-core>=25.5
+      - pyglet>=2.1.9
+      - psutil>=7.1.0
+      - blosc>=1.11.1
+      - nvtx
