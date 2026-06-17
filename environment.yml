@@ -28,3 +28,4 @@ dependencies:
       - psutil>=7.1.0
       - blosc>=1.11.1
       - nvtx
+      - taichi

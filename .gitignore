@@ -2,3 +2,4 @@
 .agents/
 .codex/
 outputs/
+__pycache__/
