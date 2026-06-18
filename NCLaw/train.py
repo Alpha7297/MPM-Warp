@@ -10,6 +10,7 @@ from MLP import AdamW,MLP
 STEPS_LIST=[(0,20),(1000,100),(2000,200)]
 LR_LIST=[(0,1.0e-1),(500,1.0e-2),(1000,1.0e-3)]
 LOSS_SUBSTEPS=5
+INITIAL_CONDITION_COUNT=32
 START_EPOCH=0
 END_EPOCH=3000
 DT=5.0e-4
@@ -68,12 +69,21 @@ def rollout(state,total_steps,mode,net=None,target_pos=None,loss=None):
                 device=state.device,
             )
 
-def collect_target(model,total_steps,device_name,initial_velocity):
+def collect_target_pos(model,total_steps,device_name,initial_velocity):
     target_state=g.SimState(model,total_steps,device_name,requires_grad=False)
     g.init_state(target_state,initial_velocity)
     rollout(target_state,total_steps,"tradition")
     wp.synchronize()
-    return target_state
+    return target_state.particle_pos
+
+def collect_training_pool(model,total_steps,device_name,rng):
+    initial_velocities=[]
+    target_positions=[]
+    for _ in range(INITIAL_CONDITION_COUNT):
+        initial_velocity=random_velocity(model,device_name,rng)
+        initial_velocities.append(initial_velocity)
+        target_positions.append(collect_target_pos(model,total_steps,device_name,initial_velocity))
+    return initial_velocities,target_positions
 
 def prepare_training_state(state,net,initial_velocity):
     state.zero_forward()
@@ -89,8 +99,7 @@ def train():
     model=choose_model()
     max_steps=steps_at_epoch(END_EPOCH)
     rng=np.random.default_rng(RANDOM_SEED)
-    initial_velocity=random_velocity(model,device_name,rng)
-    target_state=collect_target(model,max_steps,device_name,initial_velocity)
+    initial_velocities,target_positions=collect_training_pool(model,max_steps,device_name,rng)
     state=g.SimState(model,max_steps,device_name,requires_grad=True)
     net=MLP(model.num_particles,max_steps,device_name,seed=RANDOM_SEED)
     if START_EPOCH!=0:
@@ -112,11 +121,13 @@ def train():
         total_steps=steps_at_epoch(epoch)
         lr=lr_at_epoch(epoch)
         optimizer.zero_grad()
-        prepare_training_state(state,net,initial_velocity)
+        sample_i=int(rng.integers(INITIAL_CONDITION_COUNT))
+        prepare_training_state(state,net,initial_velocities[sample_i])
         loss.zero_()
+        loss.grad.zero_()
         tape=wp.Tape()
         with tape:
-            rollout(state,total_steps,"nclaw",net,target_state.particle_pos,loss)
+            rollout(state,total_steps,"nclaw",net,target_positions[sample_i],loss)
         tape.backward(loss)
         optimizer.step(lr)
         wp.synchronize()
@@ -124,7 +135,7 @@ def train():
         if epoch%500==0:
             os.makedirs(NET_DIR,exist_ok=True)
             net.save(checkpoint_path(epoch),epoch,loss_value)
-        print(f"epoch={epoch} steps={total_steps} lr={lr:.6e} position_loss={loss_value:.6e}")
+        print(f"epoch={epoch} steps={total_steps} sample={sample_i}/{INITIAL_CONDITION_COUNT} lr={lr:.6e} position_loss={loss_value:.6e}")
 
 if __name__=="__main__":
     train()
