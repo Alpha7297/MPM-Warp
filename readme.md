@@ -28,7 +28,7 @@ python basicMPM/plot.py
 
 ## NCLaw
 
-`NCLaw` 是 Neural Constitutive Laws 核心思想的二维复现实验。网络根据形变梯度预测一阶 Piola-Kirchhoff 应力，并与传统 Neo-Hookean 本构模型的仿真结果进行比较。
+`NCLaw` 是 Neural Constitutive Laws 核心思想的二维复现实验。网络、MPM 仿真和优化器均使用 Warp 实现。网络根据形变梯度预测一阶 Piola-Kirchhoff 应力，训练目标是预测坐标与传统 Neo-Hookean 模型目标坐标之间的 L2 误差。
 
 训练网络：
 
@@ -36,7 +36,7 @@ python basicMPM/plot.py
 python NCLaw/train.py
 ```
 
-训练配置位于 `NCLaw/train.py`，模型检查点保存在 `NCLaw/net/`。当前默认配置训练至第 5000 个 epoch。
+训练配置位于 `NCLaw/train.py`，Warp 权重检查点以 `.npz` 格式保存在 `NCLaw/net/`。当前默认配置从第 0 个 epoch 训练至第 3000 个 epoch。
 
 分别生成传统本构模型和 NCLaw 模型的 USD：
 

@@ -1,4 +1,6 @@
 import os
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
 
 os.makedirs("/tmp/mpmwarp_matplotlib_cache",exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR","/tmp/mpmwarp_matplotlib_cache")
@@ -11,12 +13,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pxr import Usd,UsdGeom
 
-try:
-    from . import generate
-except ImportError:
-    import generate
+import generate
 
 DEFAULT_VIDEO_PATH="outputs/videos/mpm.mp4"
+DEFAULT_WORKERS=max(1,min(8,os.cpu_count() or 1))
 
 def ensure_parent_dir(path):
     directory=os.path.dirname(path)
@@ -73,15 +73,42 @@ def render_frame(points,ground,xlim,ylim):
     plt.close(fig)
     return image
 
+def render_frame_file(index,points,ground,xlim,ylim,path):
+    image=render_frame(points,ground,xlim,ylim)
+    imageio.imwrite(path,image)
+    return index
+
+def render_frames(frames,ground,xlim,ylim,directory,workers):
+    paths=[os.path.join(directory,f"frame_{i:06d}.png") for i in range(len(frames))]
+    workers=max(1,int(workers))
+    if workers==1:
+        for i,path in enumerate(paths):
+            render_frame_file(i,frames[i],ground,xlim,ylim,path)
+        return paths
+
+    batch_size=workers*2
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for start in range(0,len(frames),batch_size):
+            end=min(start+batch_size,len(frames))
+            futures=[]
+            for i in range(start,end):
+                futures.append(executor.submit(render_frame_file,i,frames[i],ground,xlim,ylim,paths[i]))
+            for future in futures:
+                future.result()
+    return paths
+
 def save_video(usd_path=generate.DEFAULT_USD_PATH,
                video_path=DEFAULT_VIDEO_PATH,
-               fps=generate.DEFAULT_FPS):
+               fps=generate.DEFAULT_FPS,
+               workers=DEFAULT_WORKERS):
     frames,ground=read_usd_data(usd_path)
     xlim,ylim=frame_limits(frames,ground)
     ensure_parent_dir(video_path)
-    with imageio.get_writer(video_path,fps=fps,quality=8) as writer:
-        for points in frames:
-            writer.append_data(render_frame(points,ground,xlim,ylim))
+    with tempfile.TemporaryDirectory(prefix="basic_mpm_frames_") as directory:
+        paths=render_frames(frames,ground,xlim,ylim,directory,workers)
+        with imageio.get_writer(video_path,fps=fps,quality=8) as writer:
+            for path in paths:
+                writer.append_data(imageio.imread(path))
     return video_path
 
 def main():

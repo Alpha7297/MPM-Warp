@@ -2,17 +2,12 @@ import os
 from pathlib import Path
 
 import numpy as np
-import torch
 import warp as wp
 import warp.render as render
 from pxr import Gf,UsdGeom
 
-try:
-    from . import kernels as k
-    from .layers import Net
-except ImportError:
-    import kernels as k
-    from layers import Net
+import kernels as k
+from MLP import MLP
 
 PARTICLE_SPACING=0.01
 DENSITY=1000.0
@@ -26,7 +21,7 @@ DEFAULT_FPS=60
 DEFAULT_NUM_STEPS=2000
 DEFAULT_DT=5.0e-4
 DEFAULT_OUTPUT_DIR="outputs/nclaw"
-NET_PATH=BASE_DIR/"net/5000.plt"
+NET_PATH=BASE_DIR/"net/3000.npz"
 CUBE_TRADITION_USD=os.path.join(DEFAULT_OUTPUT_DIR,"cube_tradition.usd")
 CUBE_NCLAW_USD=os.path.join(DEFAULT_OUTPUT_DIR,"cube_nclaw.usd")
 TABLE_TRADITION_USD=os.path.join(DEFAULT_OUTPUT_DIR,"table_tradition.usd")
@@ -40,8 +35,6 @@ TABLE_TOP_COL=30
 TABLE_TOP_ROW=10
 TABLE_LEG_COL=10
 TABLE_LEG_ROW=10
-TABLE_TOP_PARTICLES=TABLE_TOP_COL*TABLE_TOP_ROW
-TABLE_LEG_PARTICLES=TABLE_LEG_COL*TABLE_LEG_ROW
 TABLE_ORIGIN=(0.855,1.105)
 TABLE_ROTATION=0.1*np.pi
 
@@ -111,64 +104,88 @@ def table_model():
     return ModelSpec("table",table_positions())
 
 class SimState:
-    def __init__(self,model,device_name=k.device):
+    def __init__(self,model,total_steps,device_name=k.device,requires_grad=False):
         self.model=model
         self.device=device_name
+        self.total_steps=total_steps
         self.num_particles=model.num_particles
-        self.grid_pos=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
-        self.grid_vel=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
-        self.grid_vel_old=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
-        self.grid_f=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
-        self.grid_mass=wp.zeros(k.NUM_GRIDS,dtype=float,device=device_name)
-        self.particle_pos=wp.array(model.positions,dtype=wp.vec2,device=device_name)
-        self.particle_vel=wp.zeros(model.num_particles,dtype=wp.vec2,device=device_name)
-        self.particle_dvel=wp.zeros(model.num_particles,dtype=wp.mat22,device=device_name)
-        self.particle_F=wp.zeros(model.num_particles,dtype=wp.mat22,device=device_name)
-        self.particle_P=wp.zeros(model.num_particles,dtype=wp.mat22,device=device_name)
-        self.particle_mass=wp.zeros(model.num_particles,dtype=float,device=device_name)
-        self.grid_idx=wp.zeros(model.num_particles,dtype=int,device=device_name)
+        particle_count=(total_steps+1)*model.num_particles
+        grid_count=total_steps*int(k.NUM_GRIDS)
+        self.particle_pos=wp.zeros(particle_count,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
+        self.particle_vel=wp.zeros(particle_count,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
+        self.particle_vel_trial=wp.zeros(total_steps*model.num_particles,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
+        self.particle_dvel=wp.zeros(particle_count,dtype=wp.mat22,device=device_name,requires_grad=requires_grad)
+        self.particle_F=wp.zeros(particle_count,dtype=wp.mat22,device=device_name,requires_grad=requires_grad)
+        self.particle_P=wp.zeros(particle_count,dtype=wp.mat22,device=device_name,requires_grad=requires_grad)
+        self.grid_momentum=wp.zeros(grid_count,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
+        self.grid_f=wp.zeros(grid_count,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
+        self.grid_mass=wp.zeros(grid_count,dtype=float,device=device_name,requires_grad=requires_grad)
+        self.grid_vel=wp.zeros(grid_count,dtype=wp.vec2,device=device_name,requires_grad=requires_grad)
 
-@wp.kernel
-def apply_ground_boundary(particle_pos:wp.array(dtype=wp.vec2),
-                          particle_vel:wp.array(dtype=wp.vec2),
-                          grid_idx:wp.array(dtype=int),
-                          grid_size:float,
-                          grid_wid:int,
-                          ground:float,
-                          restitution:float,
-                          damping:float):
-    i=wp.tid()
-    pos=particle_pos[i]
-    vel=particle_vel[i]
-    if pos[1]<ground:
-        pos=wp.vec2(pos[0],ground)
-        if vel[1]<0.0:
-            vel=wp.vec2(vel[0]*damping,-vel[1]*restitution)
-    particle_pos[i]=pos
-    particle_vel[i]=vel
-    grid_idx[i]=int(pos[1]/grid_size)*grid_wid+int(pos[0]/grid_size)
+    def zero_forward(self):
+        self.particle_pos.zero_()
+        self.particle_vel.zero_()
+        self.particle_vel_trial.zero_()
+        self.particle_dvel.zero_()
+        self.particle_F.zero_()
+        self.particle_P.zero_()
+        self.grid_momentum.zero_()
+        self.grid_f.zero_()
+        self.grid_mass.zero_()
+        self.grid_vel.zero_()
 
-def init_state(state):
-    wp.launch(
-        k.init_grid,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_pos,state.grid_vel,state.grid_vel_old,state.grid_f,state.grid_mass,k.GRID_SIZE,k.GRID_LEN],
-        device=state.device,
-    )
+    def zero_grid(self):
+        self.grid_momentum.zero_()
+        self.grid_f.zero_()
+        self.grid_mass.zero_()
+        self.grid_vel.zero_()
+
+    def zero_grad(self):
+        for array in self.arrays():
+            if array.grad is not None:
+                array.grad.zero_()
+
+    def arrays(self):
+        return [
+            self.particle_pos,
+            self.particle_vel,
+            self.particle_vel_trial,
+            self.particle_dvel,
+            self.particle_F,
+            self.particle_P,
+            self.grid_momentum,
+            self.grid_f,
+            self.grid_mass,
+            self.grid_vel,
+        ]
+
+def default_device_name():
+    if wp.is_cuda_available():
+        return "cuda:0"
+    return "cpu"
+
+def initial_velocity_array(model,device_name,values=None):
+    if values is None:
+        values=np.zeros((model.num_particles,2),dtype=np.float32)
+    return wp.array(values,dtype=wp.vec2,device=device_name)
+
+def init_state(state,initial_velocity=None):
+    if initial_velocity is None:
+        initial_velocity=initial_velocity_array(state.model,state.device)
+    initial_pos=wp.array(state.model.positions,dtype=wp.vec2,device=state.device)
     wp.launch(
         k.init_particle_state,
         dim=state.num_particles,
         inputs=[
+            initial_pos,
+            initial_velocity,
             state.particle_pos,
             state.particle_vel,
             state.particle_dvel,
             state.particle_F,
             state.particle_P,
-            state.particle_mass,
-            state.grid_idx,
-            state.model.m0,
-            k.GRID_SIZE,
-            k.GRID_LEN,
+            0,
+            state.num_particles,
         ],
         device=state.device,
     )
@@ -178,27 +195,16 @@ def ensure_parent_dir(path):
     if directory:
         os.makedirs(directory,exist_ok=True)
 
-def default_device_name():
-    if torch.cuda.is_available():
-        return "cuda:0"
-    return "cpu"
-
-def torch_device(device_name):
-    if device_name.startswith("cuda"):
-        return torch.device(device_name)
-    return torch.device("cpu")
-
-def load_net(device,net_path=NET_PATH):
+def load_net(model,total_steps,device_name,net_path=NET_PATH):
     if net_path is None:
         net_path=NET_PATH
-    net=Net().to(device)
-    checkpoint=torch.load(net_path,map_location=device)
-    net.load_state_dict(checkpoint["state_dict"])
-    net.eval()
+    net=MLP(model.num_particles,total_steps,device_name)
+    net.load(net_path)
     return net,net_path
 
-def particle_points(state):
-    xy=state.particle_pos.numpy()
+def particle_points(state,t):
+    offset=t*state.num_particles
+    xy=state.particle_pos.numpy()[offset:offset+state.num_particles]
     points=np.zeros((xy.shape[0],3),dtype=np.float32)
     points[:,0]=xy[:,0]
     points[:,1]=xy[:,1]
@@ -220,62 +226,51 @@ def write_ground_curve(stage,points):
     curve.SetWidthsInterpolation(UsdGeom.Tokens.constant)
     UsdGeom.Gprim(curve).CreateDisplayColorAttr([Gf.Vec3f(1.0,1.0,1.0)])
 
-def render_state(renderer,state,frame,fps):
+def render_state(renderer,state,t,frame,fps):
     renderer.begin_frame(frame/float(fps))
     renderer.render_points(
         "particles",
-        points=particle_points(state),
+        points=particle_points(state,t),
         radius=0.003,
         colors=(0.4,0.8,1.0),
         as_spheres=True,
     )
     renderer.end_frame()
 
-def update_nclaw_stress(state,net,device):
-    F=wp.to_torch(state.particle_F).to(device)
-    with torch.no_grad():
-        P=net(F).contiguous()
-    state.particle_P_torch=P
-    state.particle_P=wp.from_torch(state.particle_P_torch,dtype=wp.mat22)
-
-def substep(state,dt,mode,net=None,device=None):
+def substep(state,dt,mode,t,net=None):
     if mode=="tradition":
         wp.launch(
             k.theory_strain,
             dim=state.num_particles,
-            inputs=[state.particle_dvel,state.particle_F,state.particle_P,dt,k.MU,k.LAMBDA],
+            inputs=[state.particle_dvel,state.particle_F,state.particle_P,t,state.num_particles,dt,k.MU,k.LAMBDA],
             device=state.device,
         )
     elif mode=="nclaw":
         wp.launch(
             k.update_F,
             dim=state.num_particles,
-            inputs=[state.particle_dvel,state.particle_F,dt],
+            inputs=[state.particle_dvel,state.particle_F,t,state.num_particles,dt],
             device=state.device,
         )
-        update_nclaw_stress(state,net,device)
+        net.forward(state.particle_F,state.particle_P,t)
     else:
         raise ValueError("unknown mode:"+mode)
 
     wp.launch(
-        k.zerolize_grids,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_f,state.grid_mass],
-        device=state.device,
-    )
-    wp.launch(
         k.P2G_update_grid,
         dim=state.num_particles,
         inputs=[
-            state.grid_pos,
-            state.grid_vel,
+            state.grid_momentum,
             state.grid_f,
             state.grid_mass,
             state.particle_pos,
             state.particle_vel,
-            state.particle_mass,
             state.particle_F,
             state.particle_P,
+            t,
+            state.num_particles,
+            int(k.NUM_GRIDS),
+            state.model.m0,
             k.GRID_SIZE,
             k.GRID_LEN,
             k.GRID_HEI,
@@ -284,73 +279,53 @@ def substep(state,dt,mode,net=None,device=None):
         device=state.device,
     )
     wp.launch(
-        k.P2G_grid_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_mass],
-        device=state.device,
-    )
-    wp.launch(
-        k.copy_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_vel_old],
-        device=state.device,
-    )
-    wp.launch(
         k.update_grid_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_f,state.grid_mass,wp.vec2(0.0,-k.GRAVITY),dt],
+        dim=int(k.NUM_GRIDS),
+        inputs=[state.grid_momentum,state.grid_f,state.grid_mass,state.grid_vel,t,int(k.NUM_GRIDS),wp.vec2(0.0,-k.GRAVITY),dt],
         device=state.device,
     )
     wp.launch(
         k.G2P,
         dim=state.num_particles,
-        inputs=[
-            state.grid_pos,
-            state.grid_vel,
-            state.grid_vel_old,
-            state.particle_pos,
-            state.particle_vel,
-            state.particle_dvel,
-            k.GRID_SIZE,
-            k.GRID_LEN,
-            k.GRID_HEI,
-            k.FLIP_RATIO,
-        ],
+        inputs=[state.grid_vel,state.particle_pos,state.particle_vel_trial,state.particle_dvel,t,state.num_particles,int(k.NUM_GRIDS),k.GRID_SIZE,k.GRID_LEN,k.GRID_HEI],
         device=state.device,
     )
     wp.launch(
         k.update_pos,
         dim=state.num_particles,
-        inputs=[state.particle_pos,state.particle_vel,state.grid_idx,k.GRID_SIZE,k.GRID_LEN,dt],
+        inputs=[state.particle_pos,state.particle_vel,state.particle_vel_trial,t,state.num_particles,dt,GROUND,RESTITUTION,DAMPING],
         device=state.device,
     )
+
+def roll_stream_state(state):
     wp.launch(
-        apply_ground_boundary,
+        k.copy_particle_state,
         dim=state.num_particles,
-        inputs=[state.particle_pos,state.particle_vel,state.grid_idx,k.GRID_SIZE,k.GRID_LEN,GROUND,RESTITUTION,DAMPING],
+        inputs=[state.particle_pos,state.particle_vel,state.particle_dvel,state.particle_F,state.particle_P,0,state.num_particles],
         device=state.device,
     )
+    state.zero_grid()
 
 def save_usd(model,path,mode,num_steps=DEFAULT_NUM_STEPS,dt=DEFAULT_DT,fps=DEFAULT_FPS,device_name=None,net_path=None):
     ensure_parent_dir(path)
     if device_name is None:
         device_name=default_device_name()
-    device=torch_device(device_name)
+    state=SimState(model,1,device_name)
+    init_state(state)
     net=None
     if mode=="nclaw":
-        net,net_path=load_net(device,net_path)
+        net,net_path=load_net(model,1,device_name,net_path)
 
-    state=SimState(model,device_name)
-    init_state(state)
     renderer=render.UsdRenderer(path,up_axis="Y",fps=fps,scaling=1.0)
     ground=ground_points()
     renderer.render_line_strip("ground",vertices=ground,color=(1.0,1.0,1.0),radius=0.004)
     write_ground_curve(renderer.stage,ground)
-    render_state(renderer,state,0,fps)
+    render_state(renderer,state,0,0,fps)
     for step in range(1,num_steps+1):
-        substep(state,dt,mode,net,device)
+        substep(state,dt,mode,0,net)
         wp.synchronize()
-        render_state(renderer,state,step,fps)
+        render_state(renderer,state,1,step,fps)
+        roll_stream_state(state)
     renderer.save()
     return path
 

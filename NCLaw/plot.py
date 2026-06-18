@@ -1,4 +1,6 @@
 import os
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
 
 os.makedirs("/tmp/mpmwarp_matplotlib_cache",exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR","/tmp/mpmwarp_matplotlib_cache")
@@ -11,14 +13,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pxr import Usd,UsdGeom
 
-try:
-    from . import generate
-except ImportError:
-    import generate
+import generate
 
 DEFAULT_VIDEO_DIR="outputs/videos"
 CUBE_VIDEO_PATH=os.path.join(DEFAULT_VIDEO_DIR,"cube_compare.mp4")
 TABLE_VIDEO_PATH=os.path.join(DEFAULT_VIDEO_DIR,"table_compare.mp4")
+DEFAULT_WORKERS=max(1,min(8,os.cpu_count() or 1))
 
 def ensure_parent_dir(path):
     directory=os.path.dirname(path)
@@ -82,28 +82,67 @@ def render_compare_frame(points_a,points_b,ground_a,ground_b,xlim,ylim):
     plt.close(fig)
     return image
 
-def save_compare_video(tradition_path,nclaw_path,video_path,fps=generate.DEFAULT_FPS):
+def render_compare_frame_file(index,points_a,points_b,ground_a,ground_b,xlim,ylim,path):
+    image=render_compare_frame(points_a,points_b,ground_a,ground_b,xlim,ylim)
+    imageio.imwrite(path,image)
+    return index
+
+def render_compare_frames(frames_a,frames_b,ground_a,ground_b,xlim,ylim,directory,workers):
+    frame_count=min(len(frames_a),len(frames_b))
+    paths=[os.path.join(directory,f"frame_{i:06d}.png") for i in range(frame_count)]
+    workers=max(1,int(workers))
+    if workers==1:
+        for i,path in enumerate(paths):
+            render_compare_frame_file(i,frames_a[i],frames_b[i],ground_a,ground_b,xlim,ylim,path)
+        return paths
+
+    batch_size=workers*2
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for start in range(0,frame_count,batch_size):
+            end=min(start+batch_size,frame_count)
+            futures=[]
+            for i in range(start,end):
+                futures.append(executor.submit(
+                    render_compare_frame_file,
+                    i,
+                    frames_a[i],
+                    frames_b[i],
+                    ground_a,
+                    ground_b,
+                    xlim,
+                    ylim,
+                    paths[i],
+                ))
+            for future in futures:
+                future.result()
+    return paths
+
+def save_compare_video(tradition_path,nclaw_path,video_path,fps=generate.DEFAULT_FPS,workers=DEFAULT_WORKERS):
     frames_a,ground_a=read_usd_data(tradition_path)
     frames_b,ground_b=read_usd_data(nclaw_path)
     frame_count=min(len(frames_a),len(frames_b))
     xlim,ylim=frame_limits(frames_a[:frame_count],frames_b[:frame_count],ground_a,ground_b)
     ensure_parent_dir(video_path)
-    with imageio.get_writer(video_path,fps=fps,quality=8) as writer:
-        for i in range(frame_count):
-            writer.append_data(render_compare_frame(frames_a[i],frames_b[i],ground_a,ground_b,xlim,ylim))
+    with tempfile.TemporaryDirectory(prefix="nclaw_frames_") as directory:
+        paths=render_compare_frames(frames_a,frames_b,ground_a,ground_b,xlim,ylim,directory,workers)
+        with imageio.get_writer(video_path,fps=fps,quality=8) as writer:
+            for path in paths:
+                writer.append_data(imageio.imread(path))
     return video_path
 
 def plot_cube(tradition_path=generate.CUBE_TRADITION_USD,
               nclaw_path=generate.CUBE_NCLAW_USD,
               video_path=CUBE_VIDEO_PATH,
-              fps=generate.DEFAULT_FPS):
-    return save_compare_video(tradition_path,nclaw_path,video_path,fps)
+              fps=generate.DEFAULT_FPS,
+              workers=DEFAULT_WORKERS):
+    return save_compare_video(tradition_path,nclaw_path,video_path,fps,workers)
 
 def plot_table(tradition_path=generate.TABLE_TRADITION_USD,
                nclaw_path=generate.TABLE_NCLAW_USD,
                video_path=TABLE_VIDEO_PATH,
-               fps=generate.DEFAULT_FPS):
-    return save_compare_video(tradition_path,nclaw_path,video_path,fps)
+               fps=generate.DEFAULT_FPS,
+               workers=DEFAULT_WORKERS):
+    return save_compare_video(tradition_path,nclaw_path,video_path,fps,workers)
 
 def ensure_usd_inputs():
     paths=[

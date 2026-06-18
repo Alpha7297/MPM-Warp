@@ -5,10 +5,7 @@ import warp as wp
 import warp.render as render
 from pxr import Gf,UsdGeom
 
-try:
-    from . import kernels as k
-except ImportError:
-    import kernels as k
+import kernels as k
 
 DEFAULT_FPS=60
 DEFAULT_NUM_FRAMES=1000
@@ -21,7 +18,6 @@ class SimState:
         self.device=device_name
         self.grid_pos=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
         self.grid_vel=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
-        self.grid_vel_old=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
         self.grid_f=wp.zeros(k.NUM_GRIDS,dtype=wp.vec2,device=device_name)
         self.grid_mass=wp.zeros(k.NUM_GRIDS,dtype=float,device=device_name)
         self.particle_pos=wp.zeros(k.NUM_PARTICLES,dtype=wp.vec2,device=device_name)
@@ -41,7 +37,7 @@ def init_state(state):
     wp.launch(
         k.init_grid,
         dim=k.NUM_GRIDS,
-        inputs=[state.grid_pos,state.grid_vel,state.grid_vel_old,state.grid_f,state.grid_mass,k.GRID_SIZE,k.GRID_LEN],
+        inputs=[state.grid_pos,state.grid_vel,state.grid_f,state.grid_mass,k.GRID_SIZE,k.GRID_LEN],
         device=state.device,
     )
     wp.launch(
@@ -104,12 +100,6 @@ def substep(state,dt):
         device=state.device,
     )
     wp.launch(
-        k.copy_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_vel_old],
-        device=state.device,
-    )
-    wp.launch(
         k.apply_particle_ground_contact,
         dim=k.NUM_PARTICLES,
         inputs=[
@@ -140,14 +130,12 @@ def substep(state,dt):
         inputs=[
             state.grid_pos,
             state.grid_vel,
-            state.grid_vel_old,
             state.particle_pos,
             state.particle_vel,
             state.particle_dvel,
             k.GRID_SIZE,
             k.GRID_LEN,
             k.GRID_HEI,
-            k.FLIP_RATIO,
         ],
         device=state.device,
     )

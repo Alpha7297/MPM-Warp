@@ -85,24 +85,6 @@ try:
 except Exception as e:
     mark(False,"NVIDIA driver/GPU",repr(e),critical=False)
 
-print("\n========== PyTorch ==========")
-torch=check_import("torch","torch",critical=True)
-if torch is not None:
-    try:
-        mark(True,"torch version",torch.__version__,critical=True)
-        cuda_ok=torch.cuda.is_available()
-        mark(cuda_ok,"torch.cuda.is_available()",str(cuda_ok),critical=False)
-        if cuda_ok:
-            idx=torch.cuda.current_device()
-            name=torch.cuda.get_device_name(idx)
-            cap=torch.cuda.get_device_capability(idx)
-            x=torch.ones((4,),device="cuda")
-            y=x+x
-            torch.cuda.synchronize()
-            mark(bool(torch.allclose(y,torch.full((4,),2.0,device="cuda"))),"torch CUDA tensor test",f"device={name},capability={cap}",critical=False)
-    except Exception as e:
-        mark(False,"torch CUDA tensor test",repr(e),critical=False)
-
 print("\n========== Warp ==========")
 wp=check_import("warp","warp-lang",critical=True)
 

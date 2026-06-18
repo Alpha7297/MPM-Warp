@@ -6,7 +6,6 @@ device="cuda:0"
 MODULUS=wp.constant(20000.0)
 POISSON=wp.constant(0.2)
 SUBSTEPS=wp.constant(100)
-FLIP_RATIO=wp.constant(0.1)
 PARTICLE_SPACING=wp.constant(0.01)
 TABLE_TOP_COL=wp.constant(30)
 TABLE_TOP_ROW=wp.constant(10)
@@ -55,7 +54,6 @@ def dkernel_func(r:float):
 @wp.kernel
 def init_grid(grid_pos:wp.array(dtype=wp.vec2),
               grid_vel:wp.array(dtype=wp.vec2),
-              grid_vel_old:wp.array(dtype=wp.vec2),
               grid_f:wp.array(dtype=wp.vec2),
               grid_mass:wp.array(dtype=float),
               grid_size:float,
@@ -65,7 +63,6 @@ def init_grid(grid_pos:wp.array(dtype=wp.vec2),
     y=i//grid_wid
     grid_pos[i]=wp.vec2(float(x)*grid_size,float(y)*grid_size)
     grid_vel[i]=wp.vec2(0.0,0.0)
-    grid_vel_old[i]=wp.vec2(0.0,0.0)
     grid_f[i]=wp.vec2(0.0,0.0)
     grid_mass[i]=0.0
 
@@ -202,12 +199,6 @@ def P2G_grid_vel(grid_vel:wp.array(dtype=wp.vec2),
         grid_vel[i]=grid_vel[i]/grid_mass[i]
 
 @wp.kernel
-def copy_vel(vel1:wp.array(dtype=wp.vec2),
-             vel2:wp.array(dtype=wp.vec2)):
-    i=wp.tid()
-    vel2[i]=vel1[i]
-
-@wp.kernel
 def update_grid_vel(grid_vel:wp.array(dtype=wp.vec2),
                     grid_f:wp.array(dtype=wp.vec2),
                     grid_mass:wp.array(dtype=float),
@@ -264,19 +255,15 @@ def apply_particle_ground_contact(grid_pos:wp.array(dtype=wp.vec2),
 @wp.kernel
 def G2P(grid_pos:wp.array(dtype=wp.vec2),
         grid_vel:wp.array(dtype=wp.vec2),
-        grid_vel_old:wp.array(dtype=wp.vec2),
         particle_pos:wp.array(dtype=wp.vec2),
         particle_vel:wp.array(dtype=wp.vec2),
         particle_dvel:wp.array(dtype=wp.mat22),
         grid_size:float,
         grid_wid:int,
-        grid_hei:int,
-        flip_ratio:float):
+        grid_hei:int):
     i=wp.tid()
     pos=particle_pos[i]
-    old_v=particle_vel[i]
     pic_v=wp.vec2(0.0,0.0)
-    flip_v=old_v
     dvel=wp.mat22(0.0,0.0,0.0,0.0)
     base_x=int(pos[0]/grid_size-0.5)
     base_y=int(pos[1]/grid_size-0.5)
@@ -293,8 +280,7 @@ def G2P(grid_pos:wp.array(dtype=wp.vec2),
                 weight=wx*wy
                 dN=wp.vec2(dkernel_func(r[0]/grid_size)*wy,dkernel_func(r[1]/grid_size)*wx)/grid_size
                 pic_v=pic_v+grid_vel[idx]*weight
-                flip_v=flip_v+(grid_vel[idx]-grid_vel_old[idx])*weight
                 dvel=dvel+wp.outer(grid_vel[idx],dN)
 
-    particle_vel[i]=pic_v*(1.0-flip_ratio)+flip_v*flip_ratio
+    particle_vel[i]=pic_v
     particle_dvel[i]=dvel

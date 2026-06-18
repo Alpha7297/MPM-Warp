@@ -8,7 +8,6 @@ device="cuda:0"
 
 MODULUS=wp.constant(20000.0)
 POISSON=wp.constant(0.2)
-FLIP_RATIO=wp.constant(0.1)
 MU=wp.constant(MODULUS/(2.0*(1.0+POISSON)))
 LAMBDA=wp.constant(MODULUS*POISSON/((1.0+POISSON)*(1.0-2.0*POISSON)))
 GRAVITY=wp.constant(9.8)
@@ -24,8 +23,8 @@ def kernel_func(r:float):
     if ar<0.5:
         return 0.75-ar*ar
     elif ar<1.5:
-        t=1.5-ar
-        return 0.5*t*t
+        value=1.5-ar
+        return 0.5*value*value
     else:
         return 0.0
 
@@ -41,107 +40,78 @@ def dkernel_func(r:float):
         return 0.0
 
 @wp.kernel
-def init_grid(grid_pos:wp.array(dtype=wp.vec2),
-              grid_vel:wp.array(dtype=wp.vec2),
-              grid_vel_old:wp.array(dtype=wp.vec2),
-              grid_f:wp.array(dtype=wp.vec2),
-              grid_mass:wp.array(dtype=float),
-              grid_size:float,
-              grid_wid:int):
-    i=wp.tid()
-    x=i%grid_wid
-    y=i//grid_wid
-    grid_pos[i]=wp.vec2(float(x)*grid_size,float(y)*grid_size)
-    grid_vel[i]=wp.vec2(0.0,0.0)
-    grid_vel_old[i]=wp.vec2(0.0,0.0)
-    grid_f[i]=wp.vec2(0.0,0.0)
-    grid_mass[i]=0.0
-
-@wp.kernel
-def init_particle_state(particle_pos:wp.array(dtype=wp.vec2),
+def init_particle_state(initial_pos:wp.array(dtype=wp.vec2),
+                        initial_vel:wp.array(dtype=wp.vec2),
+                        particle_pos:wp.array(dtype=wp.vec2),
                         particle_vel:wp.array(dtype=wp.vec2),
                         particle_dvel:wp.array(dtype=wp.mat22),
                         particle_F:wp.array(dtype=wp.mat22),
                         particle_P:wp.array(dtype=wp.mat22),
-                        particle_mass:wp.array(dtype=float),
-                        grid_idx:wp.array(dtype=int),
-                        m0:float,
-                        grid_size:float,
-                        grid_wid:int):
+                        t:int,
+                        num_particles:int):
     i=wp.tid()
-    pos=particle_pos[i]
-    particle_vel[i]=wp.vec2(0.0,0.0)
-    particle_dvel[i]=wp.mat22(0.0,0.0,0.0,0.0)
-    particle_F[i]=wp.mat22(1.0,0.0,0.0,1.0)
-    particle_P[i]=wp.mat22(0.0,0.0,0.0,0.0)
-    particle_mass[i]=m0
-    grid_idx[i]=int(pos[1]/grid_size)*grid_wid+int(pos[0]/grid_size)
-
-@wp.kernel
-def update_pos(particle_pos:wp.array(dtype=wp.vec2),
-               particle_vel:wp.array(dtype=wp.vec2),
-               grid_idx:wp.array(dtype=int),
-               grid_size:float,
-               grid_wid:int,
-               dt:float
-               ):
-    i=wp.tid()
-    pos=particle_pos[i]+particle_vel[i]*dt
-    particle_pos[i]=pos
-    grid_idx[i]=int(pos[1]/grid_size)*grid_wid+int(pos[0]/grid_size)
+    offset=t*num_particles+i
+    particle_pos[offset]=initial_pos[i]
+    particle_vel[offset]=initial_vel[i]
+    particle_dvel[offset]=wp.mat22(0.0,0.0,0.0,0.0)
+    particle_F[offset]=wp.mat22(1.0,0.0,0.0,1.0)
+    particle_P[offset]=wp.mat22(0.0,0.0,0.0,0.0)
 
 @wp.kernel
 def theory_strain(particle_dvel:wp.array(dtype=wp.mat22),
-                particle_F:wp.array(dtype=wp.mat22),
-                particle_P:wp.array(dtype=wp.mat22),
-                dt:float,
-                mu:float,
-                lbd:float
-                ):
+                  particle_F:wp.array(dtype=wp.mat22),
+                  particle_P:wp.array(dtype=wp.mat22),
+                  t:int,
+                  num_particles:int,
+                  dt:float,
+                  mu:float,
+                  lbd:float):
     i=wp.tid()
-    F=particle_F[i]+(particle_dvel[i]@particle_F[i])*dt
+    current=t*num_particles+i
+    next=(t+1)*num_particles+i
+    F=particle_F[current]+(particle_dvel[current]@particle_F[current])*dt
     J=wp.determinant(F)
     LogJ=wp.log(J)
-    particle_F[i]=F
+    particle_F[next]=F
 
     p00=mu*F[0,0]-F[1,1]*(mu-lbd*LogJ)/J
     p01=mu*F[0,1]+F[1,0]*(mu-lbd*LogJ)/J
     p10=mu*F[1,0]+F[0,1]*(mu-lbd*LogJ)/J
     p11=mu*F[1,1]-F[0,0]*(mu-lbd*LogJ)/J
-    particle_P[i]=wp.mat22(p00,p01,p10,p11)
+    particle_P[next]=wp.mat22(p00,p01,p10,p11)
 
 @wp.kernel
 def update_F(particle_dvel:wp.array(dtype=wp.mat22),
              particle_F:wp.array(dtype=wp.mat22),
+             t:int,
+             num_particles:int,
              dt:float):
     i=wp.tid()
-    particle_F[i]=particle_F[i]+(particle_dvel[i]@particle_F[i])*dt
+    current=t*num_particles+i
+    next=(t+1)*num_particles+i
+    particle_F[next]=particle_F[current]+(particle_dvel[current]@particle_F[current])*dt
 
 @wp.kernel
-def zerolize_grids(grid_vel:wp.array(dtype=wp.vec2),
-                   grid_f:wp.array(dtype=wp.vec2),
-                   grid_mass:wp.array(dtype=float)):
-    i=wp.tid()
-    grid_vel[i]=wp.vec2(0.0,0.0)
-    grid_f[i]=wp.vec2(0.0,0.0)
-    grid_mass[i]=0.0
-
-@wp.kernel
-def P2G_update_grid(grid_pos:wp.array(dtype=wp.vec2),
-                    grid_vel:wp.array(dtype=wp.vec2),
+def P2G_update_grid(grid_momentum:wp.array(dtype=wp.vec2),
                     grid_f:wp.array(dtype=wp.vec2),
                     grid_mass:wp.array(dtype=float),
                     particle_pos:wp.array(dtype=wp.vec2),
                     particle_vel:wp.array(dtype=wp.vec2),
-                    particle_mass:wp.array(dtype=float),
                     particle_F:wp.array(dtype=wp.mat22),
                     particle_P:wp.array(dtype=wp.mat22),
+                    t:int,
+                    num_particles:int,
+                    num_grids:int,
+                    particle_mass:float,
                     grid_size:float,
                     grid_wid:int,
                     grid_hei:int,
                     V0:float):
     i=wp.tid()
-    pos=particle_pos[i]
+    particle_current=t*num_particles+i
+    particle_next=(t+1)*num_particles+i
+    grid_offset=t*num_grids
+    pos=particle_pos[particle_current]
     base_x=int(pos[0]/grid_size-0.5)
     base_y=int(pos[1]/grid_size-0.5)
     for ox in range(3):
@@ -149,57 +119,54 @@ def P2G_update_grid(grid_pos:wp.array(dtype=wp.vec2),
             gx=base_x+ox
             gy=base_y+oy
             if gx>=0 and gx<grid_wid and gy>=0 and gy<grid_hei:
-                idx=gy*grid_wid+gx
-                r=pos-grid_pos[idx]
+                idx=grid_offset+gy*grid_wid+gx
+                grid_pos=wp.vec2(float(gx)*grid_size,float(gy)*grid_size)
+                r=pos-grid_pos
                 wx=kernel_func(r[0]/grid_size)
                 wy=kernel_func(r[1]/grid_size)
                 weight=wx*wy
-                wp.atomic_add(grid_vel,idx,particle_vel[i]*(particle_mass[i]*weight))
-                wp.atomic_add(grid_mass,idx,particle_mass[i]*weight)
+                wp.atomic_add(grid_momentum,idx,particle_vel[particle_current]*(particle_mass*weight))
+                wp.atomic_add(grid_mass,idx,particle_mass*weight)
 
                 dN=wp.vec2(dkernel_func(r[0]/grid_size)*wy,dkernel_func(r[1]/grid_size)*wx)
-                PFt=particle_P[i]@wp.transpose(particle_F[i])
+                PFt=particle_P[particle_next]@wp.transpose(particle_F[particle_next])
                 wp.atomic_add(grid_f,idx,(PFt@dN)*(-V0/grid_size))
 
 @wp.kernel
-def P2G_grid_vel(grid_vel:wp.array(dtype=wp.vec2),
-                 grid_mass:wp.array(dtype=float)):
-    i=wp.tid()
-    if grid_mass[i]>0.0:
-        grid_vel[i]=grid_vel[i]/grid_mass[i]
-
-@wp.kernel
-def copy_vel(vel1:wp.array(dtype=wp.vec2),
-             vel2:wp.array(dtype=wp.vec2)):
-    i=wp.tid()
-    vel2[i]=vel1[i]
-
-@wp.kernel
-def update_grid_vel(grid_vel:wp.array(dtype=wp.vec2),
+def update_grid_vel(grid_momentum:wp.array(dtype=wp.vec2),
                     grid_f:wp.array(dtype=wp.vec2),
                     grid_mass:wp.array(dtype=float),
+                    grid_vel:wp.array(dtype=wp.vec2),
+                    t:int,
+                    num_grids:int,
                     f_extern:wp.vec2,
                     dt:float):
     i=wp.tid()
-    if grid_mass[i]>0.0:
-        grid_vel[i]=grid_vel[i]+dt*(grid_f[i]/grid_mass[i]+f_extern)
+    idx=t*num_grids+i
+    mass=grid_mass[idx]
+    if mass>0.0:
+        velocity=grid_momentum[idx]/mass
+        grid_vel[idx]=velocity+dt*(grid_f[idx]/mass+f_extern)
+    else:
+        grid_vel[idx]=wp.vec2(0.0,0.0)
 
 @wp.kernel
-def G2P(grid_pos:wp.array(dtype=wp.vec2),
-        grid_vel:wp.array(dtype=wp.vec2),
-        grid_vel_old:wp.array(dtype=wp.vec2),
+def G2P(grid_vel:wp.array(dtype=wp.vec2),
         particle_pos:wp.array(dtype=wp.vec2),
-        particle_vel:wp.array(dtype=wp.vec2),
+        particle_vel_trial:wp.array(dtype=wp.vec2),
         particle_dvel:wp.array(dtype=wp.mat22),
+        t:int,
+        num_particles:int,
+        num_grids:int,
         grid_size:float,
         grid_wid:int,
-        grid_hei:int,
-        flip_ratio:float):
+        grid_hei:int):
     i=wp.tid()
-    pos=particle_pos[i]
-    old_v=particle_vel[i]
+    particle_current=t*num_particles+i
+    particle_next=(t+1)*num_particles+i
+    grid_offset=t*num_grids
+    pos=particle_pos[particle_current]
     pic_v=wp.vec2(0.0,0.0)
-    flip_v=old_v
     dvel=wp.mat22(0.0,0.0,0.0,0.0)
     base_x=int(pos[0]/grid_size-0.5)
     base_y=int(pos[1]/grid_size-0.5)
@@ -209,15 +176,66 @@ def G2P(grid_pos:wp.array(dtype=wp.vec2),
             gx=base_x+ox
             gy=base_y+oy
             if gx>=0 and gx<grid_wid and gy>=0 and gy<grid_hei:
-                idx=gy*grid_wid+gx
-                r=pos-grid_pos[idx]
+                idx=grid_offset+gy*grid_wid+gx
+                grid_pos=wp.vec2(float(gx)*grid_size,float(gy)*grid_size)
+                r=pos-grid_pos
                 wx=kernel_func(r[0]/grid_size)
                 wy=kernel_func(r[1]/grid_size)
                 weight=wx*wy
                 dN=wp.vec2(dkernel_func(r[0]/grid_size)*wy,dkernel_func(r[1]/grid_size)*wx)/grid_size
                 pic_v=pic_v+grid_vel[idx]*weight
-                flip_v=flip_v+(grid_vel[idx]-grid_vel_old[idx])*weight
                 dvel=dvel+wp.outer(grid_vel[idx],dN)
 
-    particle_vel[i]=pic_v*(1.0-flip_ratio)+flip_v*flip_ratio
-    particle_dvel[i]=dvel
+    particle_vel_trial[t*num_particles+i]=pic_v
+    particle_dvel[particle_next]=dvel
+
+@wp.kernel
+def update_pos(particle_pos:wp.array(dtype=wp.vec2),
+               particle_vel:wp.array(dtype=wp.vec2),
+               particle_vel_trial:wp.array(dtype=wp.vec2),
+               t:int,
+               num_particles:int,
+               dt:float,
+               ground:float,
+               restitution:float,
+               damping:float):
+    i=wp.tid()
+    current=t*num_particles+i
+    next=(t+1)*num_particles+i
+    vel=particle_vel_trial[t*num_particles+i]
+    pos=particle_pos[current]+vel*dt
+    if pos[1]<ground:
+        pos=wp.vec2(pos[0],ground)
+        if vel[1]<0.0:
+            vel=wp.vec2(vel[0]*damping,-vel[1]*restitution)
+    particle_pos[next]=pos
+    particle_vel[next]=vel
+
+@wp.kernel
+def position_loss(particle_pos:wp.array(dtype=wp.vec2),
+                  target_pos:wp.array(dtype=wp.vec2),
+                  loss:wp.array(dtype=float),
+                  t:int,
+                  num_particles:int,
+                  position_scale:float,
+                  loss_scale:float):
+    i=wp.tid()
+    idx=(t+1)*num_particles+i
+    error=(particle_pos[idx]-target_pos[idx])*position_scale
+    wp.atomic_add(loss,0,wp.dot(error,error)*loss_scale)
+
+@wp.kernel
+def copy_particle_state(particle_pos:wp.array(dtype=wp.vec2),
+                        particle_vel:wp.array(dtype=wp.vec2),
+                        particle_dvel:wp.array(dtype=wp.mat22),
+                        particle_F:wp.array(dtype=wp.mat22),
+                        particle_P:wp.array(dtype=wp.mat22),
+                        t:int,
+                        num_particles:int):
+    i=wp.tid()
+    source=(t+1)*num_particles+i
+    particle_pos[i]=particle_pos[source]
+    particle_vel[i]=particle_vel[source]
+    particle_dvel[i]=particle_dvel[source]
+    particle_F[i]=particle_F[source]
+    particle_P[i]=particle_P[source]

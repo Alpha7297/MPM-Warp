@@ -1,42 +1,30 @@
 import os
 
-import torch
+import numpy as np
 import warp as wp
 
-try:
-    from . import kernels as k
-    from . import generate as g
-    from .layers import Net
-except ImportError:
-    import kernels as k
-    import generate as g
-    from layers import Net
+import generate as g
+import kernels as k
+from MLP import AdamW,MLP
 
 STEPS_LIST=[(0,20),(1000,100),(2000,200)]
-LR_LIST=[(0,1.0e-2),(500,1.0e-3),(1000,1.0e-4)]
+LR_LIST=[(0,1.0e-1),(500,1.0e-2),(1000,1.0e-3)]
 LOSS_SUBSTEPS=5
 START_EPOCH=0
-END_EPOCH=5000
+END_EPOCH=3000
 DT=5.0e-4
 NET_DIR=os.path.join(os.path.dirname(__file__),"net")
 TRAIN_MODEL="rectangle"
 VELOCITY_RANGE=0.1
-
-@wp.kernel
-def init_random_velocity(particle_vel:wp.array(dtype=wp.vec2),
-                         random_vel:wp.array(dtype=wp.vec2)):
-    i=wp.tid()
-    particle_vel[i]=random_vel[i]
+POSITION_SCALE=1000.0
+BETA1=0.9
+BETA2=0.999
+EPSILON=1.0e-15
+WEIGHT_DECAY=1.0e-2
+RANDOM_SEED=0
 
 def default_device_name():
-    if torch.cuda.is_available():
-        return "cuda:0"
-    return "cpu"
-
-def torch_device(device_name):
-    if device_name.startswith("cuda"):
-        return torch.device(device_name)
-    return torch.device("cpu")
+    return g.default_device_name()
 
 def choose_model():
     if TRAIN_MODEL=="rectangle":
@@ -44,124 +32,6 @@ def choose_model():
     if TRAIN_MODEL=="table":
         return g.table_model()
     raise ValueError(f"unknown TRAIN_MODEL={TRAIN_MODEL}")
-
-def init_train_velocity(state):
-    random_vel=(torch.rand((state.num_particles,2),dtype=torch.float32)*2.0-1.0)*VELOCITY_RANGE
-    random_vel_wp=wp.array(random_vel.numpy(),dtype=wp.vec2,device=state.device)
-    wp.launch(
-        init_random_velocity,
-        dim=state.num_particles,
-        inputs=[state.particle_vel,random_vel_wp],
-        device=state.device,
-    )
-
-def substep_theory(state,dt):
-    wp.launch(
-        k.theory_strain,
-        dim=state.num_particles,
-        inputs=[state.particle_dvel,state.particle_F,state.particle_P,dt,k.MU,k.LAMBDA],
-        device=state.device,
-    )
-    wp.launch(
-        k.zerolize_grids,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_f,state.grid_mass],
-        device=state.device,
-    )
-    wp.launch(
-        k.P2G_update_grid,
-        dim=state.num_particles,
-        inputs=[
-            state.grid_pos,
-            state.grid_vel,
-            state.grid_f,
-            state.grid_mass,
-            state.particle_pos,
-            state.particle_vel,
-            state.particle_mass,
-            state.particle_F,
-            state.particle_P,
-            k.GRID_SIZE,
-            k.GRID_LEN,
-            k.GRID_HEI,
-            state.model.v0,
-        ],
-        device=state.device,
-    )
-    wp.launch(
-        k.P2G_grid_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_mass],
-        device=state.device,
-    )
-    wp.launch(
-        k.copy_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_vel_old],
-        device=state.device,
-    )
-    wp.launch(
-        k.update_grid_vel,
-        dim=k.NUM_GRIDS,
-        inputs=[state.grid_vel,state.grid_f,state.grid_mass,wp.vec2(0.0,-k.GRAVITY),dt],
-        device=state.device,
-    )
-    wp.launch(
-        k.G2P,
-        dim=state.num_particles,
-        inputs=[
-            state.grid_pos,
-            state.grid_vel,
-            state.grid_vel_old,
-            state.particle_pos,
-            state.particle_vel,
-            state.particle_dvel,
-            k.GRID_SIZE,
-            k.GRID_LEN,
-            k.GRID_HEI,
-            k.FLIP_RATIO,
-        ],
-        device=state.device,
-    )
-    wp.launch(
-        k.update_pos,
-        dim=state.num_particles,
-        inputs=[state.particle_pos,state.particle_vel,state.grid_idx,k.GRID_SIZE,k.GRID_LEN,dt],
-        device=state.device,
-    )
-
-def collect_batch(device_name,total_steps):
-    model=choose_model()
-    state=g.SimState(model,device_name)
-    g.init_state(state)
-    init_train_velocity(state)
-    F_list=[]
-    P_list=[]
-    for step in range(1,total_steps+1):
-        substep_theory(state,DT)
-        if step%LOSS_SUBSTEPS==0 or step==total_steps:
-            wp.synchronize()
-            F_list.append(wp.to_torch(state.particle_F).detach().clone())
-            P_list.append(wp.to_torch(state.particle_P).detach().clone())
-    wp.synchronize()
-    return torch.stack(F_list,dim=0),torch.stack(P_list,dim=0)
-
-def loss_fn(net,F_batch,P_batch):
-    pred=net(F_batch.reshape(-1,2,2)).reshape_as(P_batch)
-    loss_per_time=torch.mean((pred-P_batch)**2,dim=(1,2,3))
-    return torch.mean(loss_per_time)
-
-def save_net(net,epoch,loss):
-    os.makedirs(NET_DIR,exist_ok=True)
-    path=os.path.join(NET_DIR,f"{epoch}.plt")
-    torch.save({"epoch":epoch,"loss":float(loss),"state_dict":net.state_dict()},path)
-    return path
-
-def load_net(net,epoch,device):
-    path=os.path.join(NET_DIR,f"{epoch}.plt")
-    checkpoint=torch.load(path,map_location=device)
-    net.load_state_dict(checkpoint["state_dict"])
-    return checkpoint
 
 def value_at_epoch(schedule,epoch):
     value=schedule[0][1]
@@ -178,39 +48,83 @@ def steps_at_epoch(epoch):
 def lr_at_epoch(epoch):
     return value_at_epoch(LR_LIST,epoch)
 
+def is_loss_step(step,total_steps):
+    return step%LOSS_SUBSTEPS==0 or step==total_steps
+
+def random_velocity(model,device_name,rng):
+    values=rng.uniform(-VELOCITY_RANGE,VELOCITY_RANGE,size=(model.num_particles,2)).astype(np.float32)
+    return wp.array(values,dtype=wp.vec2,device=device_name)
+
+def rollout(state,total_steps,mode,net=None,target_pos=None,loss=None):
+    loss_steps=sum(1 for step in range(1,total_steps+1) if is_loss_step(step,total_steps))
+    loss_scale=1.0/float(loss_steps*state.num_particles)
+    for t in range(total_steps):
+        g.substep(state,DT,mode,t,net)
+        if loss is not None and is_loss_step(t+1,total_steps):
+            wp.launch(
+                k.position_loss,
+                dim=state.num_particles,
+                inputs=[state.particle_pos,target_pos,loss,t,state.num_particles,POSITION_SCALE,loss_scale],
+                device=state.device,
+            )
+
+def collect_target(model,total_steps,device_name,initial_velocity):
+    target_state=g.SimState(model,total_steps,device_name,requires_grad=False)
+    g.init_state(target_state,initial_velocity)
+    rollout(target_state,total_steps,"tradition")
+    wp.synchronize()
+    return target_state
+
+def prepare_training_state(state,net,initial_velocity):
+    state.zero_forward()
+    state.zero_grad()
+    net.zero_workspace()
+    g.init_state(state,initial_velocity)
+
+def checkpoint_path(epoch):
+    return os.path.join(NET_DIR,f"{epoch}.npz")
+
 def train():
     device_name=default_device_name()
-    device=torch_device(device_name)
-    current_steps=steps_at_epoch(START_EPOCH)
-    F_batch,P_batch=collect_batch(device_name,current_steps)
-    F_batch=F_batch.to(device)
-    P_batch=P_batch.to(device)
-    net=Net().to(device)
+    model=choose_model()
+    max_steps=steps_at_epoch(END_EPOCH)
+    rng=np.random.default_rng(RANDOM_SEED)
+    initial_velocity=random_velocity(model,device_name,rng)
+    target_state=collect_target(model,max_steps,device_name,initial_velocity)
+    state=g.SimState(model,max_steps,device_name,requires_grad=True)
+    net=MLP(model.num_particles,max_steps,device_name,seed=RANDOM_SEED)
     if START_EPOCH!=0:
-        checkpoint=load_net(net,START_EPOCH,device)
-        print(f"loaded={os.path.join(NET_DIR,f'{START_EPOCH}.plt')} loss={checkpoint.get('loss')}")
-    optimizer=torch.optim.AdamW(net.parameters(),lr=lr_at_epoch(START_EPOCH+1))
+        loaded_epoch,loaded_loss=net.load(checkpoint_path(START_EPOCH))
+        print(f"loaded={checkpoint_path(loaded_epoch)} loss={loaded_loss}")
+    optimizer=AdamW(
+        net.parameters,
+        beta1=BETA1,
+        beta2=BETA2,
+        epsilon=EPSILON,
+        weight_decay=WEIGHT_DECAY,
+    )
+    loss=wp.zeros(1,dtype=float,device=device_name,requires_grad=True)
     start=0
     if START_EPOCH!=0:
         start=START_EPOCH+1
+
     for epoch in range(start,END_EPOCH+1):
         total_steps=steps_at_epoch(epoch)
-        if total_steps!=current_steps:
-            current_steps=total_steps
-            F_batch,P_batch=collect_batch(device_name,current_steps)
-            F_batch=F_batch.to(device)
-            P_batch=P_batch.to(device)
         lr=lr_at_epoch(epoch)
-        for group in optimizer.param_groups:
-            group["lr"]=lr
         optimizer.zero_grad()
-        loss=loss_fn(net,F_batch,P_batch)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(net.parameters(),0.1)
-        optimizer.step()
+        prepare_training_state(state,net,initial_velocity)
+        loss.zero_()
+        tape=wp.Tape()
+        with tape:
+            rollout(state,total_steps,"nclaw",net,target_state.particle_pos,loss)
+        tape.backward(loss)
+        optimizer.step(lr)
+        wp.synchronize()
+        loss_value=float(loss.numpy()[0])
         if epoch%500==0:
-            path=save_net(net,epoch,loss.detach().cpu())
-        print(f"epoch={epoch} steps={current_steps} lr={lr:.6e} loss={float(loss.detach().cpu()):.6e}")
+            os.makedirs(NET_DIR,exist_ok=True)
+            net.save(checkpoint_path(epoch),epoch,loss_value)
+        print(f"epoch={epoch} steps={total_steps} lr={lr:.6e} position_loss={loss_value:.6e}")
 
 if __name__=="__main__":
     train()
