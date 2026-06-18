@@ -15,7 +15,7 @@ except ImportError:
 STEPS_LIST=[(0,20),(1000,100),(2000,200)]
 LR_LIST=[(0,1.0e-2),(500,1.0e-3),(1000,1.0e-4)]
 LOSS_SUBSTEPS=5
-START_EPOCH=3000
+START_EPOCH=0
 END_EPOCH=5000
 DT=5.0e-4
 NET_DIR=os.path.join(os.path.dirname(__file__),"net")
