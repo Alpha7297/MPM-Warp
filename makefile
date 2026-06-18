@@ -6,17 +6,20 @@ OUT=outputs
 
 all: run
 
-run: plot
-
 plot:
 	mkdir -p $(OUT)
-	$(PYTHON) $(SRC)/plot.py
+	$(PYTHON) NCLaw/plot.py
+
+generate:
+	mkdir -p $(OUT)
+	$(PYTHON) NCLaw/generate.py
 
 clean:
 	rm -rf $(OUT)/*
 
 video:
-	mpv outputs/videos/mpm.mp4
+	mpv outputs/videos/cube_compare.mp4
+	mpv outputs/videos/table_compare.mp4
 
 train:
-	$(PYTHON) diff_test/MLP.py
+	$(PYTHON) NCLaw/train.py
