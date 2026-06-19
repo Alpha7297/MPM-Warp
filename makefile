@@ -9,6 +9,9 @@ MPM3D_OUT=$(OUT)/3d_mpm
 	3DCube_save 3DTable_save \
 	2D_generate 2D_plot \
 	NCLaw_generate NCLaw_plot NCLaw_train \
+	exp11_train exp11_plot \
+	exp12_train exp12_plot \
+	exp13_train exp13_plot \
 	generate plot train video clean
 
 all: 3DCube_generate
@@ -57,6 +60,30 @@ NCLaw_plot:
 NCLaw_train:
 	mkdir -p NCLaw/net
 	$(PYTHON) NCLaw/train.py
+
+exp11_train:
+	mkdir -p experiment/exp1/net
+	$(PYTHON) experiment/exp1/train.py --model 1
+
+exp11_plot:
+	mkdir -p $(VIDEO_OUT)
+	$(PYTHON) experiment/exp1/plot.py --model 1
+
+exp12_train:
+	mkdir -p experiment/exp1/net
+	$(PYTHON) experiment/exp1/train.py --model 2
+
+exp12_plot:
+	mkdir -p $(VIDEO_OUT)
+	$(PYTHON) experiment/exp1/plot.py --model 2
+
+exp13_train:
+	mkdir -p experiment/exp1/net
+	$(PYTHON) experiment/exp1/train.py --model 3
+
+exp13_plot:
+	mkdir -p $(VIDEO_OUT)
+	$(PYTHON) experiment/exp1/plot.py --model 3
 
 generate: NCLaw_generate
 

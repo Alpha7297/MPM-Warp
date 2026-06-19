@@ -7,7 +7,6 @@ import warp.render as render
 from pxr import Gf,UsdGeom
 
 import kernels as k
-from MLP import MLP
 
 PARTICLE_SPACING=0.01
 DENSITY=1000.0
@@ -195,13 +194,6 @@ def ensure_parent_dir(path):
     if directory:
         os.makedirs(directory,exist_ok=True)
 
-def load_net(model,total_steps,device_name,net_path=NET_PATH):
-    if net_path is None:
-        net_path=NET_PATH
-    net=MLP(model.num_particles,total_steps,device_name)
-    net.load(net_path)
-    return net,net_path
-
 def particle_points(state,t):
     offset=t*state.num_particles
     xy=state.particle_pos.numpy()[offset:offset+state.num_particles]
@@ -313,9 +305,6 @@ def save_usd(model,path,mode,num_steps=DEFAULT_NUM_STEPS,dt=DEFAULT_DT,fps=DEFAU
     state=SimState(model,1,device_name)
     init_state(state)
     net=None
-    if mode=="nclaw":
-        net,net_path=load_net(model,1,device_name,net_path)
-
     renderer=render.UsdRenderer(path,up_axis="Y",fps=fps,scaling=1.0)
     ground=ground_points()
     renderer.render_line_strip("ground",vertices=ground,color=(1.0,1.0,1.0),radius=0.004)
