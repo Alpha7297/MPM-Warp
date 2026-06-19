@@ -3,7 +3,7 @@ import warp as wp
 wp.init()
 device="cuda:0"
 
-MODULUS=wp.constant(20000.0)
+MODULUS=wp.constant(100000.0)
 POISSON=wp.constant(0.2)
 SUBSTEPS=wp.constant(100)
 PARTICLE_SPACING=wp.constant(0.01)

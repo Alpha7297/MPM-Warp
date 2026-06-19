@@ -44,6 +44,7 @@ all: 3DCube_generate
 2D_plot:
 	mkdir -p $(VIDEO_OUT)
 	$(PYTHON) 2D/plot.py
+	mpv outputs/videos/mpm.mp4
 
 NCLaw_generate:
 	mkdir -p $(OUT)
