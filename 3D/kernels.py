@@ -6,7 +6,7 @@ wp.config.kernel_cache_dir=os.path.abspath(os.path.join(os.path.dirname(__file__
 wp.init()
 device="cuda:0" if wp.is_cuda_available() else "cpu"
 
-MODULUS=wp.constant(12000.0)
+MODULUS=wp.constant(50000.0)
 POISSON=wp.constant(0.2)
 DENSITY=wp.constant(1000.0)
 GRAVITY=wp.constant(9.8)
@@ -186,6 +186,23 @@ def update_grid_vel(grid_vel:wp.array(dtype=wp.vec3),
         grid_vel[i]=vel
 
 @wp.kernel
+def apply_grid_ground_contact(grid_vel:wp.array(dtype=wp.vec3),
+                              grid_mass:wp.array(dtype=float),
+                              grid_size:float,
+                              grid_wid:int,
+                              grid_hei:int,
+                              ground:float,
+                              restitution:float,
+                              damping:float):
+    i=wp.tid()
+    y=(i//grid_wid)%grid_hei
+    ground_y=int(ground/grid_size-0.5)
+    if grid_mass[i]>0.0 and y>=ground_y and y<ground_y+3:
+        vel=grid_vel[i]
+        if vel[1]<0.0:
+            grid_vel[i]=wp.vec3(vel[0]*damping,-vel[1]*restitution,vel[2]*damping)
+
+@wp.kernel
 def G2P(grid_pos:wp.array(dtype=wp.vec3),
         grid_vel:wp.array(dtype=wp.vec3),
         particle_pos:wp.array(dtype=wp.vec3),
@@ -254,8 +271,6 @@ def update_pos(particle_pos:wp.array(dtype=wp.vec3),
 
     if pos[1]<ground:
         pos=wp.vec3(pos[0],ground,pos[2])
-        if vel[1]<0.0:
-            vel=wp.vec3(vel[0]*damping,-vel[1]*restitution,vel[2]*damping)
     if pos[0]<min_x:
         pos=wp.vec3(min_x,pos[1],pos[2])
         if vel[0]<0.0:

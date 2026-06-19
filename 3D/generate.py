@@ -237,6 +237,21 @@ def substep(state,dt):
         device=state.device,
     )
     wp.launch(
+        k.apply_grid_ground_contact,
+        dim=k.NUM_GRIDS,
+        inputs=[
+            state.grid_vel,
+            state.grid_mass,
+            k.GRID_SIZE,
+            k.GRID_LEN,
+            k.GRID_HEI,
+            k.GROUND,
+            k.RESTITUTION,
+            k.DAMPING,
+        ],
+        device=state.device,
+    )
+    wp.launch(
         k.G2P,
         dim=state.num_particles,
         inputs=[
