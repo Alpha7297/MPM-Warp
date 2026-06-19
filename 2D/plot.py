@@ -115,7 +115,7 @@ def main():
     usd_path=generate.save_particles_ground_usd(
         path=generate.DEFAULT_USD_PATH,
         fps=60,
-        num_frames=1000,
+        num_frames=2000,
         substeps_per_frame=10,
     )
     save_video(usd_path=usd_path,video_path=DEFAULT_VIDEO_PATH,fps=60)

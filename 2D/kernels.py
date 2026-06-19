@@ -24,9 +24,9 @@ RESTITUTION=wp.constant(0.7)
 GRAVITY=wp.constant(9.8)
 DAMPING=wp.constant(0.9)
 
-GRID_SIZE=wp.constant(0.014)
-GRID_LEN=wp.constant(160)
-GRID_HEI=wp.constant(160)
+GRID_SIZE=wp.constant(0.01)
+GRID_LEN=wp.constant(224)
+GRID_HEI=wp.constant(224)
 NUM_GRIDS=wp.constant(GRID_LEN*GRID_HEI)
 
 @wp.func
